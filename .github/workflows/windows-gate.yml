@@ -67,6 +67,6 @@ jobs:
           if ($join45 -eq 0) { throw "no join or sign-in control 45 s after start" }
           if ($n45 -match "Leif") { throw "the window names Leif" }
       - name: evidence
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
-        with: { name: windows-gate, path: out, retention-days: 3 }
+        with: { name: windows-gate, path: out, retention-days: 1 }
