@@ -63,7 +63,8 @@ jobs:
           $join20 = @($n20 | Where-Object { $_ -match "^(Button|Edit)`t.*(join|sign in|invite|code)" }).Count
           $join45 = @($n45 | Where-Object { $_ -match "^(Button|Edit)`t.*(join|sign in|invite|code)" }).Count
           "ui elements 20s=$(@($n20).Count) 45s=$(@($n45).Count); join controls 20s=$join20 45s=$join45" | Tee-Object -Append out/report.txt
-          if ($join20 -eq 0) { throw "no join or sign-in control 20 s after start" }
+          # WebView2 builds its accessibility tree on the first read, so the 20 s read can come back nearly empty: 45 s decides
+          if ($join45 -eq 0) { throw "no join or sign-in control 45 s after start" }
           if ($n45 -match "Leif") { throw "the window names Leif" }
       - name: evidence
         if: always()
