@@ -1,0 +1,69 @@
+# The Windows release gate: every ce installer runs once on a real Windows (windows-latest has WebView2) before it
+# goes to a customer. `windows-build gate <exe>` uploads the exe as a private prerelease asset, dispatches this job,
+# waits and fetches the evidence (screenshot + report). Public repo: no customer data, no page text uploaded.
+name: windows-gate
+on:
+  workflow_dispatch:
+    inputs:
+      asset: { description: "installer file name", required: true }
+      sha256: { description: "expected sha256 of the installer", required: true }
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: download and check sha
+        env: { EXE_URL: "${{ secrets.EXE_URL }}" }
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out, dl | Out-Null
+          Invoke-WebRequest -Uri $env:EXE_URL -OutFile "dl/${{ inputs.asset }}" -UseBasicParsing
+          $h = (Get-FileHash "dl/${{ inputs.asset }}" -Algorithm SHA256).Hash.ToLower()
+          "sha256 $h" | Tee-Object -Append out/report.txt
+          if ($h -ne "${{ inputs.sha256 }}".ToLower()) { throw "sha mismatch: got $h" }
+      - name: silent install
+        shell: pwsh
+        run: |
+          $p = Start-Process "dl/${{ inputs.asset }}" -ArgumentList "/S" -Wait -PassThru
+          "install exit $($p.ExitCode)" | Tee-Object -Append out/report.txt
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+          $exe = @("$env:ProgramFiles\ce\ce.exe", "$env:LOCALAPPDATA\ce\ce.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "ce.exe not installed" }
+          "exe $exe" | Tee-Object -Append out/report.txt
+          "CE_EXE=$exe" | Out-File -Append $env:GITHUB_ENV
+      - name: start ce, read the page, screenshot
+        shell: pwsh
+        run: |
+          # the page is read over the WebView2 debug port (this run only): the join bar must render
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+          $ce = Start-Process $env:CE_EXE -PassThru
+          Start-Sleep 20
+          if ($ce.HasExited) { "ce exited $($ce.ExitCode)" | Tee-Object -Append out/report.txt; throw "ce.exe exited" }
+          "ce alive after 20 s; webview2 procs $((Get-Process msedgewebview2 -ErrorAction SilentlyContinue).Count)" | Tee-Object -Append out/report.txt
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD/out/screen.png")
+          $pages = Invoke-RestMethod http://127.0.0.1:9222/json
+          $page = $pages | Where-Object { $_.type -eq "page" } | Select-Object -First 1
+          if (-not $page) { throw "no WebView2 page" }
+          "page $($page.url)" | Tee-Object -Append out/report.txt
+          $ws = New-Object System.Net.WebSockets.ClientWebSocket
+          $ws.ConnectAsync([Uri]$page.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
+          $expr = 'JSON.stringify({join: !!document.querySelector("#join"), joinHidden: document.querySelector("#join")?.hidden ?? null, invite: !!document.querySelector("#join-invite"), text: document.body.innerText.slice(0, 3000)})'
+          $msg = @{ id = 1; method = "Runtime.evaluate"; params = @{ expression = $expr; returnByValue = $true } } | ConvertTo-Json -Compress
+          $ws.SendAsync([ArraySegment[byte]][Text.Encoding]::UTF8.GetBytes($msg), "Text", $true, [Threading.CancellationToken]::None).Wait()
+          $buf = New-Object byte[] 1048576; $sb = New-Object Text.StringBuilder
+          do { $r = $ws.ReceiveAsync([ArraySegment[byte]]$buf, [Threading.CancellationToken]::None).Result; [void]$sb.Append([Text.Encoding]::UTF8.GetString($buf, 0, $r.Count)) } while (-not $r.EndOfMessage)
+          $v = ($sb.ToString() | ConvertFrom-Json).result.result.value
+          $p = $v | ConvertFrom-Json
+          "join bar present=$($p.join) hidden=$($p.joinHidden) invite field=$($p.invite)" | Tee-Object -Append out/report.txt
+          if (-not $p.join) { throw "join bar missing" }
+          if ($p.text -match "Leif") { throw "page names Leif" }
+      - name: evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: windows-gate, path: out, retention-days: 3 }
