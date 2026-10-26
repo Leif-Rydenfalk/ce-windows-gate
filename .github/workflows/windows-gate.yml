@@ -93,11 +93,18 @@ jobs:
           $root = [System.Windows.Automation.AutomationElement]::FromHandle($ce.MainWindowHandle)
           $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
           $inv = $all | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and $_.Current.Name -match "invite" } | Select-Object -First 1
-          $go = $all | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -match "sign in" } | Select-Object -First 1
+          $go = $all | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -match "^sign in with" } | Select-Object -First 1
           if (-not $go) { throw "no sign-in button" }
           if ($inv) { $inv.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue("https://apps.ce-net.com/invite/gatecheck000000000/ ") }
           $before = [ConWatch]::Seen
-          $go.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+          # WebView2 buttons do not always offer Invoke: then click the middle of the button as a person does
+          $ip = $null
+          if ($go.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$ip)) { $ip.Invoke() } else {
+            $r = $go.Current.BoundingRectangle
+            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2))
+            Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int f, int x, int y, int d, int e);' -Name Mouse -Namespace Gate
+            [Gate.Mouse]::mouse_event(2, 0, 0, 0, 0); [Gate.Mouse]::mouse_event(4, 0, 0, 0, 0)
+          }
           Start-Sleep 20
           [ConWatch]::Stop = $true
           $browser = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(msedge|chrome|firefox)\.exe$' -and $_.CommandLine -match 'apps\.ce-net\.com/__gate/join\?node=[0-9a-f]{64}&host=[^&\s]+&invite=gatecheck000000000' }).Count
