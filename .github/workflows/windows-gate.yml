@@ -50,6 +50,27 @@ jobs:
             $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
             $all | ForEach-Object { "$($_.Current.ControlType.ProgrammaticName -replace 'ControlType.','')`t$($_.Current.Name)" } | Where-Object { $_ -notmatch "`t$" }
           }
+          # every console window that shows while ce runs: ce.exe is a windowed program, so a console program it starts
+          # without CREATE_NO_WINDOW flashes a black window (3DWayTech 10-26: "everything is flashing every 3 seconds")
+          Add-Type -TypeDefinition @"
+          using System; using System.Text; using System.Threading; using System.Runtime.InteropServices;
+          public static class ConWatch {
+            delegate bool EnumProc(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+            [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+            public static int Seen; public static volatile bool Stop;
+            static readonly System.Collections.Generic.HashSet<IntPtr> Known = new System.Collections.Generic.HashSet<IntPtr>();
+            public static void Start() {
+              EnumWindows((h, l) => { Known.Add(h); return true; }, IntPtr.Zero);
+              new Thread(() => { while (!Stop) { EnumWindows((h, l) => {
+                if (IsWindowVisible(h) && !Known.Contains(h)) { var c = new StringBuilder(256); GetClassName(h, c, 256);
+                  var k = c.ToString(); if (k == "ConsoleWindowClass" || k == "CASCADIA_HOSTING_WINDOW_CLASS") { Known.Add(h); Interlocked.Increment(ref Seen); } }
+                return true; }, IntPtr.Zero); Thread.Sleep(5); } }) { IsBackground = true }.Start();
+            }
+          }
+          "@
+          [ConWatch]::Start()
           $ce = Start-Process $env:CE_EXE -PassThru
           Start-Sleep 20
           if ($ce.HasExited) { "ce exited $($ce.ExitCode)" | Tee-Object -Append out/report.txt; throw "ce.exe exited" }
@@ -66,6 +87,27 @@ jobs:
           # WebView2 builds its accessibility tree on the first read, so the 20 s read can come back nearly empty: 45 s decides
           if ($join45 -eq 0) { throw "no join or sign-in control 45 s after start" }
           if ($n45 -match "Leif") { throw "the window names Leif" }
+          # sign in with an invite link pasted the way a person does (trailing slash), as 3DWayTech did: the system
+          # browser must open on the gate's join page (not Explorer on Documents), with no console flashing while the
+          # app waits for the sign-in (it asks every 3 s). The code is a dummy: the gate treats it as no invite.
+          $root = [System.Windows.Automation.AutomationElement]::FromHandle($ce.MainWindowHandle)
+          $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+          $inv = $all | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and $_.Current.Name -match "invite" } | Select-Object -First 1
+          $go = $all | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -match "sign in" } | Select-Object -First 1
+          if (-not $go) { throw "no sign-in button" }
+          if ($inv) { $inv.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue("https://apps.ce-net.com/invite/gatecheck000000000/ ") }
+          $before = [ConWatch]::Seen
+          $go.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+          Start-Sleep 20
+          [ConWatch]::Stop = $true
+          $browser = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(msedge|chrome|firefox)\.exe$' -and $_.CommandLine -match 'apps\.ce-net\.com/__gate/join\?node=[0-9a-f]{64}&host=[^&\s]+&invite=gatecheck000000000' }).Count
+          $docs = @((New-Object -ComObject Shell.Application).Windows() | Where-Object { $_.LocationName -match 'Documents' }).Count
+          "consoles start..45s=$before after-sign-in=$([ConWatch]::Seen - $before); browser on join page=$browser; explorer Documents=$docs; ce alive=$(-not $ce.HasExited)" | Tee-Object -Append out/report.txt
+          Shot screen-sign-in
+          if ($ce.HasExited) { throw "ce.exe exited after sign-in" }
+          if ([ConWatch]::Seen -gt 0) { throw "$([ConWatch]::Seen) console windows flashed" }
+          if ($docs -gt 0) { throw "sign-in opened Explorer on Documents" }
+          if ($browser -eq 0) { throw "sign-in opened no browser on the join page" }
       - name: evidence
         if: failure()
         uses: actions/upload-artifact@v4
