@@ -1,0 +1,15 @@
+# Typed stamp of this repo (cell doc.stamp): when it last changed, its version, who may see it, who keeps it
+# current and where the true copy lives. Docs inside inherit it; a doc that differs carries its own
+# `<!-- stamp ... -->` line. Change it with `doc-stamp set` or by hand.
+[stamp]
+id = "repo:ce-windows-gate"
+kind = "repo"
+path = "https://github.com/Leif-Rydenfalk/ce-windows-gate"
+updated_at = 2026-10-26T10:22:46Z
+version = "0.6"
+access = "public"
+canonical_of = []
+duplicate_of = ""
+owner = "foreman/lead"
+source_of_truth = "https://github.com/Leif-Rydenfalk/ce-windows-gate"
+stale_after = 180
